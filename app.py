@@ -4,6 +4,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timezone
 import xml.etree.ElementTree as ET
 import time
+import base64
 from flask import Flask, Response
 
 app = Flask(__name__)
@@ -37,23 +38,70 @@ HEADERS = {
 }
 
 
-def resolve_google_news_url(url: str) -> str:
-    """يتبع الـ redirect من Google News للوصول للرابط الحقيقي"""
+def decode_google_news_url(url: str) -> str:
+    """يفك تشفير رابط Google News ويرجع الرابط الحقيقي"""
     try:
-        r = requests.get(url, headers=HEADERS, timeout=10, allow_redirects=True)
-        return r.url
-    except:
+        # الروابط من نوع /rss/articles/ تحتوي على الرابط الحقيقي مشفر في base64
+        if "/rss/articles/" in url:
+            # استخدم Google News API لفك الرابط
+            article_id = url.split("/rss/articles/")[-1].split("?")[0]
+            
+            # طريقة 1: فك base64 مباشرة
+            try:
+                # أضف padding إذا ناقص
+                padding = 4 - len(article_id) % 4
+                if padding != 4:
+                    article_id += "=" * padding
+                decoded = base64.b64decode(article_id.replace("-", "+").replace("_", "/"))
+                # البحث عن URL في الـ bytes
+                text = decoded.decode("latin-1")
+                import re
+                urls = re.findall(r'https?://[^\s\x00-\x1f"<>]+', text)
+                if urls:
+                    # تصفية روابط google نفسها
+                    real_urls = [u for u in urls if "google.com" not in u]
+                    if real_urls:
+                        print(f"    decoded URL: {real_urls[0][:80]}")
+                        return real_urls[0]
+            except Exception as e:
+                print(f"    base64 decode failed: {e}")
+
+        # طريقة 2: follow redirects مع session
+        session = requests.Session()
+        session.max_redirects = 10
+        r = session.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
+        final_url = r.url
+        print(f"    redirect URL: {final_url[:80]}")
+        
+        if "google.com" not in final_url:
+            return final_url
+            
+        # طريقة 3: ابحث عن canonical URL في الصفحة
+        soup = BeautifulSoup(r.text, "html.parser")
+        canonical = soup.find("link", rel="canonical")
+        if canonical and canonical.get("href"):
+            href = canonical["href"]
+            if "google.com" not in href:
+                print(f"    canonical URL: {href[:80]}")
+                return href
+                
+        return final_url
+        
+    except Exception as e:
+        print(f"    decode error: {e}")
         return url
 
 
 def fetch_article_text(url: str) -> str:
-    """يفتح الرابط ويرجع النص الكامل"""
+    """يفتح المقال الحقيقي ويرجع النص"""
     try:
-        # تتبع الـ redirect أولاً
-        real_url = resolve_google_news_url(url)
-        print(f"    رابط حقيقي: {real_url[:80]}...")
-
-        r = requests.get(real_url, headers=HEADERS, timeout=10)
+        real_url = decode_google_news_url(url)
+        
+        if "google.com" in real_url:
+            print(f"    ⚠️ لا يزال رابط Google، تخطي")
+            return ""
+        
+        r = requests.get(real_url, headers=HEADERS, timeout=15)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
         for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
@@ -102,7 +150,7 @@ def process_all_feeds() -> str:
         feed = feedparser.parse(feed_url)
 
         if not feed.entries:
-            print("لا مقالات في الـ feed!")
+            print("لا مقالات!")
             continue
 
         entries = feed.entries[:MAX_ARTICLES_TO_CHECK]
@@ -117,10 +165,9 @@ def process_all_feeds() -> str:
 
             print(f"[{i+1}] {title[:70]}...")
 
-            # تحقق من العنوان أولاً
             title_match, kw = matches_keywords(title)
             if title_match:
-                print(f"  ✅ تطابق في العنوان: '{kw}'")
+                print(f"  ✅ عنوان: '{kw}'")
                 all_matched.append({
                     "title": title, "link": link,
                     "summary": entry.get("summary", ""),
@@ -129,12 +176,11 @@ def process_all_feeds() -> str:
                 seen_links.add(link)
                 continue
 
-            # افتح المقال
             article_text = fetch_article_text(link)
             if article_text:
                 content_match, kw = matches_keywords(article_text)
                 if content_match:
-                    print(f"  ✅ تطابق في المحتوى: '{kw}'")
+                    print(f"  ✅ محتوى: '{kw}'")
                     all_matched.append({
                         "title": title, "link": link,
                         "summary": entry.get("summary", ""),
@@ -146,9 +192,9 @@ def process_all_feeds() -> str:
             else:
                 print(f"  ⚠️ فشل قراءة المقال")
 
-            time.sleep(0.3)
+            time.sleep(0.5)
 
-    print(f"النتيجة النهائية: {len(all_matched)} مقال مطابق")
+    print(f"النتيجة: {len(all_matched)} مقال مطابق")
     return build_rss_xml(all_matched)
 
 

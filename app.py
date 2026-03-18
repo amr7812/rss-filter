@@ -14,7 +14,7 @@ app = Flask(__name__)
 # ============================================================
 
 RSS_FEEDS = [
-    "https://news.google.com/rss/search?q=%22fc+bayern%22&hl=de&gl=DE&ceid=DE:de",
+    "https://www.google.com/alerts/feeds/14372322808783851183/3971187562471355279",
 ]
 
 FILTER_KEYWORDS = [

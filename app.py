@@ -14,7 +14,7 @@ app = Flask(__name__)
 # ============================================================
 
 RSS_FEEDS = [
-    "https://google.com/alerts/feeds/14372322808783851183/3971187562471355279",
+    "https://news.google.com/rss/search?q=%22fc+bayern%22&hl=de&gl=DE&ceid=DE:de",
 ]
 
 FILTER_KEYWORDS = [
@@ -27,7 +27,7 @@ FILTER_KEYWORDS = [
     "klärt",
 ]
 
-MAX_ARTICLES_TO_CHECK = 30
+MAX_ARTICLES_TO_CHECK = 20
 
 # ============================================================
 
@@ -39,35 +39,29 @@ HEADERS = {
 
 
 def extract_real_url(url: str) -> str:
-    """يستخرج الرابط الحقيقي من رابط Google Alerts"""
     try:
-        # روابط Google Alerts: google.com/url?rct=j&sa=t&url=https://...
         parsed = urlparse(url)
         params = parse_qs(parsed.query)
         if "url" in params:
-            real_url = unquote(params["url"][0])
-            print(f"    رابط حقيقي: {real_url[:80]}...")
-            return real_url
-    except Exception as e:
-        print(f"    خطأ في استخراج الرابط: {e}")
+            return unquote(params["url"][0])
+    except:
+        pass
     return url
 
 
 def fetch_article_text(url: str) -> str:
-    """يفتح المقال ويرجع النص الكامل"""
     try:
-        real_url = extract_real_url(url)
-
-        r = requests.get(real_url, headers=HEADERS, timeout=15, allow_redirects=True)
+        r = requests.get(url, headers=HEADERS, timeout=10, allow_redirects=True)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
         for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
             tag.decompose()
-        text = soup.get_text(separator=" ", strip=True)
-        print(f"    نص المقال: {len(text)} حرف")
+        # أول 3000 حرف كافية للفلترة وتوفر الذاكرة
+        text = soup.get_text(separator=" ", strip=True)[:3000]
+        print(f"    نص: {len(text)} حرف")
         return text.lower()
     except Exception as e:
-        print(f"    فشل fetch: {e}")
+        print(f"    فشل: {e}")
         return ""
 
 
@@ -103,7 +97,7 @@ def process_all_feeds() -> str:
     seen_links = set()
 
     for feed_url in RSS_FEEDS:
-        print(f"قراءة RSS: {feed_url[:70]}...")
+        print(f"قراءة RSS...")
         feed = feedparser.parse(feed_url)
 
         if not feed.entries:
@@ -116,42 +110,42 @@ def process_all_feeds() -> str:
         for i, entry in enumerate(entries):
             title = entry.get("title", "")
             link = entry.get("link", "")
+            summary = entry.get("summary", "")
+            real_url = extract_real_url(link)
 
             if link in seen_links:
                 continue
 
             print(f"[{i+1}] {title[:70]}...")
 
-            # تحقق من العنوان أولاً
-            title_match, kw = matches_keywords(title)
-            if title_match:
-                print(f"  ✅ عنوان: '{kw}'")
+            # تحقق من العنوان والوصف أولاً بدون فتح الرابط
+            quick_match, kw = matches_keywords(f"{title} {summary}")
+            if quick_match:
+                print(f"  ✅ عنوان/وصف: '{kw}'")
                 all_matched.append({
-                    "title": title, "link": extract_real_url(link),
-                    "summary": entry.get("summary", ""),
-                    "published": entry.get("published", ""),
+                    "title": title, "link": real_url,
+                    "summary": summary, "published": entry.get("published", ""),
                 })
                 seen_links.add(link)
                 continue
 
-            # افتح المقال وتحقق من المحتوى
-            article_text = fetch_article_text(link)
+            # افتح المقال للتحقق من المحتوى
+            article_text = fetch_article_text(real_url)
             if article_text:
                 content_match, kw = matches_keywords(article_text)
                 if content_match:
                     print(f"  ✅ محتوى: '{kw}'")
                     all_matched.append({
-                        "title": title, "link": extract_real_url(link),
-                        "summary": entry.get("summary", ""),
-                        "published": entry.get("published", ""),
+                        "title": title, "link": real_url,
+                        "summary": summary, "published": entry.get("published", ""),
                     })
                     seen_links.add(link)
                 else:
                     print(f"  ❌ لا تطابق")
             else:
-                print(f"  ⚠️ فشل قراءة المقال")
+                print(f"  ⚠️ فشل القراءة، تخطي")
 
-            time.sleep(0.5)
+            time.sleep(1)
 
     print(f"النتيجة: {len(all_matched)} مقال مطابق")
     return build_rss_xml(all_matched)

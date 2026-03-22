@@ -48,19 +48,20 @@ def extract_real_url(url: str) -> str:
     return url
 
 
-def fetch_article_text(url: str, timeout: int = 10) -> str:
-    """يفتح الرابط ويرجع النص الكامل للمقال"""
+def fetch_article_text(url: str, timeout: int = 10) -> tuple:
+    """يفتح الرابط ويرجع (النص الكامل, الرابط الحقيقي)"""
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
         response = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
         response.raise_for_status()
+        real_url = response.url  # الرابط الحقيقي بعد الـ redirect
         soup = BeautifulSoup(response.text, "html.parser")
         for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
             tag.decompose()
-        return soup.get_text(separator=" ", strip=True).lower()
+        return soup.get_text(separator=" ", strip=True).lower(), real_url
     except Exception as e:
         print(f"  ⚠️  فشل فتح الرابط: {url[:60]}... ({e})")
-        return ""
+        return "", url
 
 
 def matches_keywords(text: str, keywords: list) -> tuple:
@@ -130,14 +131,14 @@ def process_feed(feed_url: str, seen_links: set) -> tuple:
             continue
 
         # ثانياً: افتح المقال وتحقق من المحتوى
-        article_text = fetch_article_text(real_link)
+        article_text, fetched_url = fetch_article_text(real_link)
         if article_text:
             content_match, kw = matches_keywords(article_text, FILTER_KEYWORDS)
             if content_match:
                 print(f"    ✅ تطابق في المحتوى: '{kw}'")
                 matched.append({
                     "title": title,
-                    "link": real_link,  # ← رابط حقيقي
+                    "link": fetched_url,  # ← الرابط الحقيقي بعد الـ redirect
                     "summary": entry.get("summary", ""),
                     "published": entry.get("published", ""),
                 })

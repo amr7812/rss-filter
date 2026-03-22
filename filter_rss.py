@@ -26,6 +26,7 @@ FILTER_KEYWORDS = [
     "weiß",
     "Informationen",
     "klärt",
+    "-Informationen",
 ]
 
 # عدد المقالات التي يتم فحصها من كل feed (زيادتها = وقت أطول)

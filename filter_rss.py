@@ -121,9 +121,11 @@ def process_feed(feed_url: str, seen_links: set) -> tuple:
         title_match, kw = matches_keywords(title, FILTER_KEYWORDS)
         if title_match:
             print(f"    ✅ تطابق في العنوان: '{kw}'")
+            # افتح الرابط فقط للحصول على الـ redirect URL الحقيقي
+            _, fetched_url = fetch_article_text(real_link)
             matched.append({
                 "title": title,
-                "link": real_link,  # ← رابط حقيقي
+                "link": fetched_url,  # ← الرابط الحقيقي بعد redirect
                 "summary": entry.get("summary", ""),
                 "published": entry.get("published", ""),
             })
@@ -131,7 +133,6 @@ def process_feed(feed_url: str, seen_links: set) -> tuple:
             continue
 
         # ثانياً: افتح المقال وتحقق من المحتوى
-        article_text, fetched_url = fetch_article_text(real_link)
         if article_text:
             content_match, kw = matches_keywords(article_text, FILTER_KEYWORDS)
             if content_match:

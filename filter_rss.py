@@ -133,13 +133,14 @@ def process_feed(feed_url: str, seen_links: set) -> tuple:
             continue
 
         # ثانياً: افتح المقال وتحقق من المحتوى
+        article_text, fetched_url = fetch_article_text(real_link)
         if article_text:
             content_match, kw = matches_keywords(article_text, FILTER_KEYWORDS)
             if content_match:
                 print(f"    ✅ تطابق في المحتوى: '{kw}'")
                 matched.append({
                     "title": title,
-                    "link": fetched_url,  # ← الرابط الحقيقي بعد الـ redirect
+                    "link": fetched_url,
                     "summary": entry.get("summary", ""),
                     "published": entry.get("published", ""),
                 })

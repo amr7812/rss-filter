@@ -3,7 +3,6 @@ import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone
 import xml.etree.ElementTree as ET
-import os
 import time
 from urllib.parse import urlparse, parse_qs, unquote
 
@@ -25,6 +24,7 @@ FILTER_KEYWORDS = [
     "Informationen",
     "klärt",
     "-Informationen",
+    "kennt",
 ]
 
 MAX_ARTICLES_TO_CHECK = 30
@@ -32,61 +32,56 @@ OUTPUT_FILE = "filtered_feed.xml"
 
 # ============================================================
 
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+
 
 def extract_real_url(url: str) -> str:
-    """يستخرج الرابط الحقيقي من رابط Google (News أو Alerts)"""
+    """يستخرج الرابط من Google Alerts إذا كان متاحاً"""
     try:
-        parsed = urlparse(url)
-        params = parse_qs(parsed.query)
-        # Google Alerts: google.com/url?rct=j&sa=t&url=https://...
+        params = parse_qs(urlparse(url).query)
         if "url" in params:
             return unquote(params["url"][0])
     except:
         pass
-    # Google News RSS articles لا يمكن فكها بدون redirect
-    # نرجع الرابط كما هو
     return url
 
 
-def fetch_article_text(url: str, timeout: int = 10) -> tuple:
-    """يفتح الرابط ويرجع (النص الكامل, الرابط الحقيقي)"""
+def fetch_article(url: str, timeout: int = 10) -> tuple:
+    """يفتح الرابط ويرجع (النص, الرابط الحقيقي بعد redirect)"""
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-        response = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
-        response.raise_for_status()
-        real_url = response.url  # الرابط الحقيقي بعد الـ redirect
-        soup = BeautifulSoup(response.text, "html.parser")
+        r = requests.get(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
+        r.raise_for_status()
+        real_url = r.url
+        soup = BeautifulSoup(r.text, "html.parser")
         for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
             tag.decompose()
         return soup.get_text(separator=" ", strip=True).lower(), real_url
     except Exception as e:
-        print(f"  ⚠️  فشل فتح الرابط: {url[:60]}... ({e})")
+        print(f"    ⚠️ فشل: {e}")
         return "", url
 
 
-def matches_keywords(text: str, keywords: list) -> tuple:
-    """يتحقق إذا كان النص يحتوي على أي كلمة من القائمة (OR)"""
+def matches_keywords(text: str) -> tuple:
     text_lower = text.lower()
-    for kw in keywords:
+    for kw in FILTER_KEYWORDS:
         if kw.lower() in text_lower:
             return True, kw
     return False, ""
 
 
 def build_rss_feed(articles: list, source_feed) -> str:
-    """يبني ملف RSS XML من المقالات المفلترة"""
     rss = ET.Element("rss", version="2.0")
     channel = ET.SubElement(rss, "channel")
     ET.SubElement(channel, "title").text = f"Filtered: {source_feed.feed.get('title', 'RSS Feed')}"
     ET.SubElement(channel, "link").text = source_feed.feed.get("link", "")
-    ET.SubElement(channel, "description").text = f"Filtered by keywords: {', '.join(FILTER_KEYWORDS)}"
+    ET.SubElement(channel, "description").text = f"Filtered by: {', '.join(FILTER_KEYWORDS)}"
     ET.SubElement(channel, "lastBuildDate").text = datetime.now(timezone.utc).strftime(
         "%a, %d %b %Y %H:%M:%S +0000"
     )
     for article in articles:
         item = ET.SubElement(channel, "item")
         ET.SubElement(item, "title").text = article["title"]
-        ET.SubElement(item, "link").text = article["link"]  # ← رابط حقيقي الآن
+        ET.SubElement(item, "link").text = article["link"]
         ET.SubElement(item, "description").text = article.get("summary", "")
         ET.SubElement(item, "pubDate").text = article.get("published", "")
         ET.SubElement(item, "guid").text = article["link"]
@@ -103,50 +98,46 @@ def process_feed(feed_url: str, seen_links: set) -> tuple:
 
     entries = feed.entries[:MAX_ARTICLES_TO_CHECK]
     print(f"  📰 عدد المقالات للفحص: {len(entries)}")
-
     matched = []
 
     for i, entry in enumerate(entries):
         title = entry.get("title", "")
         link = entry.get("link", "")
-        real_link = extract_real_url(link)  # ← استخرج الرابط الحقيقي
+        summary = entry.get("summary", "")
 
         if link in seen_links:
-            print(f"  [{i+1}] ⏭️  مكرر، تم تخطيه")
+            print(f"  [{i+1}] ⏭️ مكرر")
             continue
 
-        print(f"  [{i+1}/{len(entries)}] {title[:60]}...")
+        print(f"  [{i+1}/{len(entries)}] {title[:65]}...")
+        seen_links.add(link)
 
-        # أولاً: تحقق من العنوان
-        title_match, kw = matches_keywords(title, FILTER_KEYWORDS)
-        if title_match:
-            print(f"    ✅ تطابق في العنوان: '{kw}'")
-            # افتح الرابط فقط للحصول على الـ redirect URL الحقيقي
-            _, fetched_url = fetch_article_text(real_link)
+        # تحقق من العنوان والوصف أولاً (بدون فتح الرابط)
+        quick_match, kw = matches_keywords(f"{title} {summary}")
+        if quick_match:
+            print(f"    ✅ عنوان/وصف: '{kw}' — جاري فتح الرابط...")
+            _, real_url = fetch_article(extract_real_url(link))
             matched.append({
-                "title": title,
-                "link": fetched_url,  # ← الرابط الحقيقي بعد redirect
-                "summary": entry.get("summary", ""),
-                "published": entry.get("published", ""),
+                "title": title, "link": real_url,
+                "summary": summary, "published": entry.get("published", ""),
             })
-            seen_links.add(link)
+            time.sleep(0.5)
             continue
 
-        # ثانياً: افتح المقال وتحقق من المحتوى
-        article_text, fetched_url = fetch_article_text(real_link)
+        # افتح المقال وتحقق من المحتوى
+        article_text, real_url = fetch_article(extract_real_url(link))
         if article_text:
-            content_match, kw = matches_keywords(article_text, FILTER_KEYWORDS)
+            content_match, kw = matches_keywords(article_text)
             if content_match:
-                print(f"    ✅ تطابق في المحتوى: '{kw}'")
+                print(f"    ✅ محتوى: '{kw}'")
                 matched.append({
-                    "title": title,
-                    "link": fetched_url,
-                    "summary": entry.get("summary", ""),
-                    "published": entry.get("published", ""),
+                    "title": title, "link": real_url,
+                    "summary": summary, "published": entry.get("published", ""),
                 })
-                seen_links.add(link)
             else:
                 print(f"    ❌ لا تطابق")
+        else:
+            print(f"    ⚠️ فشل القراءة")
 
         time.sleep(0.5)
 
@@ -154,7 +145,7 @@ def process_feed(feed_url: str, seen_links: set) -> tuple:
 
 
 def main():
-    print(f"🔑 الكلمات المطلوبة (OR): {FILTER_KEYWORDS}")
+    print(f"🔑 الكلمات (OR): {FILTER_KEYWORDS}")
     print(f"📡 عدد الـ Feeds: {len(RSS_FEEDS)}")
 
     all_matched = []
@@ -167,16 +158,16 @@ def main():
         if first_feed is None:
             first_feed = feed
 
-    print(f"\n📊 النتيجة الإجمالية: {len(all_matched)} مقال مطابق")
+    print(f"\n📊 النتيجة: {len(all_matched)} مقال مطابق")
 
     xml_content = build_rss_feed(all_matched, first_feed)
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         f.write(xml_content)
 
     if all_matched:
-        print(f"✅ تم حفظ الـ feed في: {OUTPUT_FILE}")
+        print(f"✅ تم الحفظ في: {OUTPUT_FILE}")
     else:
-        print("⚠️  لم يتم العثور على مقالات مطابقة، تم حفظ feed فارغ")
+        print("⚠️ لا مقالات مطابقة")
 
 
 if __name__ == "__main__":
